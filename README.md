@@ -22,6 +22,6 @@ If so, the indicators are reported immediately, and the culprit is pointed out, 
   - [cca: 56.0>=40; self=0 other=2 ifrence=54] rssi=-58dBm noise=-96dBm snr=30 (etc)
 
 ## Configurable
-You might want to adjust the quality clauses in lines 10-20.
+You might want to adjust the quality clauses in lines 10-20 of the script.
 Have a look.
 
