@@ -25,5 +25,5 @@ If so, the indicators are reported immediately, and the culprit is pointed out, 
 You might want to adjust the quality clauses in lines 10-20 of the script.
 Have a look.
 
-It can even log to your syslog server, if you tells it: syslog=SERVERNAME
+It can even log to your syslog server, if you tell it: syslog=SERVERNAME
 
