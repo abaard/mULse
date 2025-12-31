@@ -35,7 +35,7 @@ $I_am		= $I_am[$#I_am];				if ($I_am =~ /^(\S+)\.pl-?(.*)$/o) {($I_am,$variety) 
 	PID	=> $$,
 );
 
-$doDots			= $true;
+($doDots,$showMath)	= ($true,$false);
 %path		= (
 	log		=> "/usr/bin/log",
 	networksetup	=> "/usr/sbin/networksetup",
@@ -173,6 +173,19 @@ foreach my $tag (split(/ /, $LQMdoLaterTags))	{$LQMdoLater{$tag} = $true}
 	"interferenceTotal"	=> "ifrence",
 );
 
+sub pct {
+  my ($nom,$denom,$nDecimals) = @_;
+  if (($denom == 0) || !defined($nom)) {
+    return('?%');
+  } else {
+    my $pct = $nom * 100 / $denom;
+    if (defined($nDecimals)) {
+      $pct = int(.5+$pct*(10**$nDecimals))/(10**$nDecimals);
+    }
+    return("$pct\%");
+  }
+}
+
 sub LQM {
   my ($data) = @_;
   my ($prefix,$output,$CCAparts) = ("","","");
@@ -194,9 +207,9 @@ sub LQM {
   $LQMcount++;
   my $doLog = 0;
   if ($timeDiff >= $LQMlogging{Frequency}) {$doLog++}
-  %LQMdata = ();
+  %LQMdata = %LQMinfo = ();
   @tagOrder = ();
-  while ($data =~ /^([^=]+)=(\([^\)]*\)|\S+) *(.*)$/o) {
+  while ($data =~ /^([^=]+)=(\([^\)]*\)|\S+) *(.*)$/o) {					# e.g: rssi=-54dBm per_ant_rssi=(-55dBm, -56dBm) noise=-97dBm snr=30 cca=4.0% (etc)
     my ($tag,$value) = ($1,$2);
     $data = $3;
     $LQMdata{$tag} = $value;
@@ -213,6 +226,11 @@ sub LQM {
       $CCAparts .= "$LQMccaParts{$tag}=$LQMnum{$tag} ";
     }
   }
+  while ($data =~ /^(\S+) = (\S+) *(.*)$/o) {							# e.g: network = <redacted> bssid = <redacted> channel = 40 BW = 20
+    my ($tag,$value) = ($1,$2);
+    $data = $3;
+    $LQMinfo{$tag} = $value;
+  }
 
   foreach my $tag (keys %LQMnum) {								# does any parameter exceed the boundary in "%LQMlogging = ( ... );" at top of file? ==> doLog++
     if ($LQMlogging{$tag}) {
@@ -221,28 +239,40 @@ sub LQM {
           if (($4 eq ">") && ($LQMnum{$3} <= $5)) {next}
           if (($4 eq "<") && ($LQMnum{$3} >= $5)) {next}
         }
-        if    (defined($LQMprevNum{$tag}) && (abs($LQMnum{$tag}-$LQMprevNum{$tag}) >= $1))	{$doLog++; $prefix .= "\[$tag: \|$LQMnum{$tag}-$LQMprevNum{$tag}\|>=$1" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+        if    (defined($LQMprevNum{$tag}) && (abs($LQMnum{$tag}-$LQMprevNum{$tag}) >= $1))	{$doLog++; my $expr = (($showMath) ? "\|$LQMnum{$tag}-$LQMprevNum{$tag}\|>=$1" : abs($LQMnum{$tag}-$LQMprevNum{$tag}));
+												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
       } elsif ($LQMlogging{$tag} =~ /^(\d+):above(;self<([\.\d]+))?$/o) {
         if ($LQMnum{$tag} >= $1) {
-          if ($2 && ($tag eq "cca") && (($LQMnum{"ccaSelfTotal"}/$LQMnum{"cca"}) <= $3))	{$doLog++; $prefix .= "\[$tag: $LQMnum{$tag}>=$1" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
-          elsif (!$2)										{$doLog++; $prefix .= "\[$tag: $LQMnum{$tag}>=$1" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+          if ($2 && ($tag eq "cca") && (($LQMnum{"ccaSelfTotal"}/$LQMnum{"cca"}) <= $3))	{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}>=$1" : $LQMnum{$tag});
+												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+          elsif (!$2)										{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}>=$1" : $LQMnum{$tag});
+												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
         }
       } elsif ($LQMlogging{$tag} =~ /^(\d+):below(\!(\d+))?$/o) {
-        if ((!defined($3) || ($LQMnum{$tag} != $3)) && ($LQMnum{$tag} <= $1))			{$doLog++; $prefix .= "\[$tag: $LQMnum{$tag}<=$1" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+        if ((!defined($3) || ($LQMnum{$tag} != $3)) && ($LQMnum{$tag} <= $1))			{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}<=$1" : $LQMnum{$tag});
+												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
       } elsif ($LQMlogging{$tag} =~ /^(\d+):pct:(\w+)(;(\w+)([<>])(-?\d+))?$/o) {
         if ($3) {
           if (($5 eq ">") && ($LQMnum{$4} <= $6)) {next}
           if (($5 eq "<") && ($LQMnum{$4} >= $6)) {next}
         }
-        if (($LQMnum{$2} > 0) && (($LQMnum{$tag}*100/$LQMnum{$2})>=$1))				{$doLog++; $prefix .= "\[$tag: $LQMnum{$tag}*100/$LQMnum{$2}>=$1" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+        if (($LQMnum{$2} > 0) && (($LQMnum{$tag}*100/$LQMnum{$2})>=$1))				{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}*100/$LQMnum{$2}>=$1" : pct($LQMnum{$tag},$LQMnum{$2},0));
+												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
       } elsif ($LQMlogging{$tag} =~ /^(\d+):pct\+:(\w+)(;(\w+)([<>])(-?\d+))?$/o) {
         if ($3 && ($LQMnum{$4} <= $6)) {next}
         if ($3) {
           if (($5 eq ">") && ($LQMnum{$4} <= $6)) {next}
           if (($5 eq "<") && ($LQMnum{$4} >= $6)) {next}
         }
-        if (($LQMnum{$2} > 0) && (($LQMnum{$tag}*100/($LQMnum{$2}+$LQMnum{$tag}))>=$1))		{$doLog++; $prefix .= "\[$tag: $LQMnum{$tag}*100/($LQMnum{$2}+$LQMnum{$tag})>=$1" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+        if (($LQMnum{$2} > 0) && (($LQMnum{$tag}*100/($LQMnum{$2}+$LQMnum{$tag}))>=$1))		{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}*100/($LQMnum{$2}+$LQMnum{$tag})>=$1" : pct($LQMnum{$tag},$LQMnum{$2}+$LQMnum{$tag},0));
+												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
   } } }
+  foreach my $tag (keys %LQMinfo) {
+    if (defined($LQMprevInfo{$tag}) && ($LQMinfo{$tag} ne $LQMprevInfo{$tag})) {
+      $doLog++;
+      $prefix .= "\[$tag: $LQMprevInfo{$tag}->$LQMinfo{$tag}\] ";
+  } }
+
 
   if ($doLog > 0) {
     chop($CCAparts);
@@ -258,6 +288,7 @@ sub LQM {
     print ".";
   }
   %LQMprevNum = %LQMnum;
+  %LQMprevInfo = %LQMinfo;
   if (!defined($LQMlastLogged)) {$LQMlastLogged = time()}
 }
 
