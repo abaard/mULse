@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 
 # mULse -> macOS Unified Logging syslog extension
-# (c) Anders Baardsgaard 2025, mULse(at)(lastname).priv.no
+# (c) Anders Baardsgaard 2025-2026, mULse(at)(lastname).priv.no
 #
 # This software comes with NO WARRANTIES!
     
@@ -16,14 +16,21 @@
 	txFail		=>	 "3:pct:txFrames",		#   - ratio of txFail to txFrames is >3%; or
 	txRetrans	=>	"35:pct+:txFrames;txFrames>50",	#   - ratio of txRetrans to (txFrames+txRetrans) is >35%, if also #txFrames>50 (10fps); or
 	rxRate		=>	"25:below!0",			#   - RXrate <25Mbps, but non-zero; or
-	rxRetryFrames	=>	"20:pct+:rxFrames;rxFrames>50",	#   - ratio of rxRetryFrames to rxFrames is >20%, if also #rxFrames>50 (10fps)
+	rxRetryFrames	=>	"20:pct+:rxFrames;rxFrames>50",	#   - ratio of rxRetryFrames to rxFrames is >20%, if also #rxFrames>50 (10fps); or
+	beaconLoss	=>	"45:pct:beaconSched",		#   - ratio of beaconLoss (synthetic) to beaconSched is >45%
 #	rxToss		=>	"25:pct:rxFrames",
+);
+%LQMlegend	= (						# reporting just "rssi=..." is confusing, when it's the DIFF that's triggered
+	rssi		=>	"dRSSI",
+	noise		=>	"dNoise",
+	snr		=>	"dSNR",
+	rxRetryFrames	=>	"rxRetry",
 );
 
 ($true,$false)	= (0==0,0==1);
 
 $usage		= "usage: $0 [syslog=HOST]\n";
-$version	= "beta";
+$version	= "beta2";
 
 @I_am		= split(/\//,$0);
 $I_am		= $I_am[$#I_am];				if ($I_am =~ /^(\S+)\.pl-?(.*)$/o) {($I_am,$variety) = ($1,$2)}
@@ -36,6 +43,7 @@ $I_am		= $I_am[$#I_am];				if ($I_am =~ /^(\S+)\.pl-?(.*)$/o) {($I_am,$variety) 
 );
 
 ($doDots,$showMath)	= ($true,$false);
+$ignore0dBms		= $true;
 %path		= (
 	log		=> "/usr/bin/log",
 	networksetup	=> "/usr/sbin/networksetup",
@@ -162,10 +170,12 @@ $LQMcount	= $LQMlastLogged= undef;
 %LQMaggregate	= %LQMprevNum	= ();
 $LQMaggrTags	= "ccaSelfTotal ccaOtherTotal interferenceTotal txFrames txFail txRetrans rxFrames rxRetryFrames rxToss beaconRecv beaconSched";	# +txFwFrames,txFwFail,txFwRetrans
 $LQMignoreTags	= "per_ant_rssi txFwFrames txFwFail txFwRetrans";
-$LQMdoLaterTags	= "txFallbackRate beaconRecv beaconSched";
+$LQMsuppressTags= "rxToss beaconRecv beaconSched";
+$LQMdoLaterTags	= "txFallbackRate";
 $LQMccaPtTags	= "ccaSelfTotal ccaOtherTotal interferenceTotal";
 foreach my $tag (split(/ /, $LQMaggrTags))	{$LQMaggr{$tag} = $true}
 foreach my $tag (split(/ /, $LQMignoreTags))	{$LQMignore{$tag} = $true}
+foreach my $tag (split(/ /, $LQMsuppressTags))	{$LQMsuppress{$tag} = $true}
 foreach my $tag (split(/ /, $LQMdoLaterTags))	{$LQMdoLater{$tag} = $true}
 %LQMccaParts	= (
 	"ccaSelfTotal"		=> "self",
@@ -194,7 +204,7 @@ sub LQM {
   sub LQMsummary {
     my $LQMsummary = "";
     foreach my $tag (@tagOrder) {
-      next if ($LQMignore{$tag} || $LQMdoLater{$tag} || $LQMccaParts{$tag});			# TODO: LQM do Later
+      next if ($LQMignore{$tag} || $LQMsuppress{$tag} || $LQMdoLater{$tag} || $LQMccaParts{$tag});	# TODO: LQM do Later
       if    ($LQMaggr{$tag})	{$LQMsummary .= "$tag=$LQMaggregate{$tag} "}
       elsif ($LQMnum{$tag})	{$LQMsummary .= "$tag=$LQMdata{$tag} "}
       else			{$LQMsummary .= "$tag=$LQMdata{$tag} "}
@@ -231,6 +241,8 @@ sub LQM {
     $data = $3;
     $LQMinfo{$tag} = $value;
   }
+  if ($ignore0dBms && ($LQMnum{rssi} == 0)) {return()}
+  $LQMnum{beaconLoss} = $LQMnum{beaconSched} - $LQMnum{beaconRecv};
 
   foreach my $tag (keys %LQMnum) {								# does any parameter exceed the boundary in "%LQMlogging = ( ... );" at top of file? ==> doLog++
     if ($LQMlogging{$tag}) {
@@ -240,24 +252,25 @@ sub LQM {
           if (($4 eq "<") && ($LQMnum{$3} >= $5)) {next}
         }
         if    (defined($LQMprevNum{$tag}) && (abs($LQMnum{$tag}-$LQMprevNum{$tag}) >= $1))	{$doLog++; my $expr = (($showMath) ? "\|$LQMnum{$tag}-$LQMprevNum{$tag}\|>=$1" : abs($LQMnum{$tag}-$LQMprevNum{$tag}));
-												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+												 my $dTag = (($LQMlegend{$tag}) ? $LQMlegend{$tag} : $tag);
+												 $prefix .= "\[$dTag:$expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
       } elsif ($LQMlogging{$tag} =~ /^(\d+):above(;self<([\.\d]+))?$/o) {
         if ($LQMnum{$tag} >= $1) {
           if ($2 && ($tag eq "cca") && (($LQMnum{"ccaSelfTotal"}/$LQMnum{"cca"}) <= $3))	{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}>=$1" : $LQMnum{$tag});
-												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+												 $prefix .= "\[$tag:$expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
           elsif (!$2)										{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}>=$1" : $LQMnum{$tag});
-												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+												 $prefix .= "\[$tag:$expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
         }
       } elsif ($LQMlogging{$tag} =~ /^(\d+):below(\!(\d+))?$/o) {
         if ((!defined($3) || ($LQMnum{$tag} != $3)) && ($LQMnum{$tag} <= $1))			{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}<=$1" : $LQMnum{$tag});
-												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+												 $prefix .= "\[$tag:$expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
       } elsif ($LQMlogging{$tag} =~ /^(\d+):pct:(\w+)(;(\w+)([<>])(-?\d+))?$/o) {
         if ($3) {
           if (($5 eq ">") && ($LQMnum{$4} <= $6)) {next}
           if (($5 eq "<") && ($LQMnum{$4} >= $6)) {next}
         }
         if (($LQMnum{$2} > 0) && (($LQMnum{$tag}*100/$LQMnum{$2})>=$1))				{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}*100/$LQMnum{$2}>=$1" : pct($LQMnum{$tag},$LQMnum{$2},0));
-												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+												 $prefix .= "\[$tag:$expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
       } elsif ($LQMlogging{$tag} =~ /^(\d+):pct\+:(\w+)(;(\w+)([<>])(-?\d+))?$/o) {
         if ($3 && ($LQMnum{$4} <= $6)) {next}
         if ($3) {
@@ -265,21 +278,22 @@ sub LQM {
           if (($5 eq "<") && ($LQMnum{$4} >= $6)) {next}
         }
         if (($LQMnum{$2} > 0) && (($LQMnum{$tag}*100/($LQMnum{$2}+$LQMnum{$tag}))>=$1))		{$doLog++; my $expr = (($showMath) ? "$LQMnum{$tag}*100/($LQMnum{$2}+$LQMnum{$tag})>=$1" : pct($LQMnum{$tag},$LQMnum{$2}+$LQMnum{$tag},0));
-												 $prefix .= "\[$tag: $expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
+												 $prefix .= "\[$tag:$expr" . (($tag eq "cca") ? "; LQMCCAPARTS" : "") . '] '}
   } } }
   foreach my $tag (keys %LQMinfo) {
     if (defined($LQMprevInfo{$tag}) && ($LQMinfo{$tag} ne $LQMprevInfo{$tag})) {
       $doLog++;
-      $prefix .= "\[$tag: $LQMprevInfo{$tag}->$LQMinfo{$tag}\] ";
+      $prefix .= "\[$tag:$LQMprevInfo{$tag}->$LQMinfo{$tag}\] ";
   } }
 
 
   if ($doLog > 0) {
     chop($CCAparts);
     $prefix =~ s/LQMCCAPARTS/$CCAparts/g;
-    $output = LQMsummary();
+    substr($prefix, 0, 0) = "\[dT=${timeDiff}s\] ";
+    $prefix =~ s/\] \[/; /g;
     while ($prefix =~ /\s$/o) {chop($prefix)}
-    logIt("\[dT=${timeDiff}s\] " . (($prefix) ? "$prefix " : "") . $output);
+    logIt($prefix . " " . LQMsummary());
     %LQMaggregate = ();
     $LQMlastLogged = $now;
   } elsif ($LQMcount == 1) {
@@ -313,7 +327,8 @@ sub reg {
   print "".join(" # ", @myWifiInfo)."\n";
   $inputSrc = "CMD";
 
-logIt("HELLO from $my{name} (" . (($my{variety})?$my{variety}:$version) . ") \@$my{hostname} " . (($my{currSSID})?"assocTo=$my{currSSID} ":"") . "IP=$my{IPaddr}/$my{mask}; PID=$my{PID}, user=$my{user}");
+logIt("HELLO from $my{name} (" . (($my{variety})?$my{variety}:$version) . ") \@$my{hostname} "
+	. (($my{currSSID})?"assocTo=$my{currSSID} ":"") . "IP=$my{IPaddr}/$my{mask}; PID=$my{PID}, user=$my{user}");
 
 LINE:
 while (<INPUT>) {
